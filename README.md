@@ -109,9 +109,34 @@ There are three types of plugins:
       "command": "python3 {path} --port {port}",
       "description": "A Python multiplication plugin",
       "workdir": "./plugins/multiply"
+    },
+    "remote-plugin-example": {
+      "type": "remote",
+      "address": "localhost:50055",
+      "description": "An example of a remote plugin"
     }
   }
 }
+```
+
+## Testing Remote Plugins
+
+A test plugin server is included to demonstrate the remote plugin functionality. You can run it using the `make` target.
+
+**1. Start the remote plugin server**
+
+In one terminal, run the following command. The server will start and listen on port `50055`.
+
+```sh
+make start-remote-plugin
+```
+
+**2. Run the remote plugin**
+
+In another terminal, you can now use the main application to execute the remote plugin.
+
+```sh
+./bin/app run remote-plugin-example --message "Hello from a remote plugin!"
 ```
 
 ## How to Create a Plugin

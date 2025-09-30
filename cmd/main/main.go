@@ -2,11 +2,8 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log"
-	"net"
-	"os"
 	"os/signal"
 	"strings"
 	"sync"
@@ -14,31 +11,230 @@ import (
 	"time"
 
 	"github.com/example/grpc-plugin-app/pkg/shared"
+	"github.com/spf13/cobra"
 )
 
-// parseParams parses command line arguments in the format key=value into a map
-func parseParams(args []string) map[string]string {
-	params := make(map[string]string)
-	for _, arg := range args {
-		parts := strings.SplitN(arg, "=", 2)
-		if len(parts) == 2 {
-			params[parts[0]] = parts[1]
+var (
+	cfgFile string
+	config  *shared.AppConfig
+)
+
+// rootCmd represents the base command when called without any subcommands
+var rootCmd = &cobra.Command{
+	Use:   "app",
+	Short: "A plugin-based application framework",
+	Long:  `A CLI application that manages and executes plugins using gRPC.`,
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		// Load configuration
+		var err error
+		config, err = shared.LoadConfig(cfgFile)
+		if err != nil {
+			return fmt.Errorf("failed to load config: %w", err)
 		}
-	}
-	return params
+		return nil
+	},
 }
 
-// findAvailablePort finds an available port starting from the given base port
-func findAvailablePort(basePort int) int {
-	for port := basePort; port < basePort+100; port++ {
-		addr := fmt.Sprintf(":%d", port)
-		listener, err := net.Listen("tcp", addr)
-		if err == nil {
-			listener.Close()
-			return port
+// listCmd represents the list command
+var listCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List available plugins",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println("Available plugins:")
+		for _, desc := range config.ListPlugins() {
+			fmt.Printf("  %s\n", desc)
+		}
+	},
+}
+
+// infoCmd represents the info command
+var infoCmd = &cobra.Command{
+	Use:   "info [plugin-name]",
+	Short: "Show detailed information for a specific plugin",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return showPluginHelp(args[0])
+	},
+}
+
+// runCmd represents the run command
+var runCmd = &cobra.Command{
+	Use:   "run [plugin-name] [param1=value1 ...]",
+	Short: "Run a specific plugin",
+	Args:  cobra.MinimumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		pluginName := args[0]
+
+		// Check for a help flag in the arguments
+		for _, arg := range args[1:] {
+			if arg == "--help" || arg == "-h" {
+				return showPluginHelp(pluginName)
+			}
+		}
+
+		pluginParams := parsePluginFlags(args[1:])
+
+		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer cancel()
+
+		return executePlugin(ctx, pluginName, pluginParams)
+	},
+}
+
+func init() {
+	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "config.json", "config file (default is config.json)")
+	rootCmd.AddCommand(listCmd)
+	rootCmd.AddCommand(infoCmd)
+	rootCmd.AddCommand(runCmd)
+
+	// Stop parsing flags after the first non-flag argument (the plugin name)
+	runCmd.Flags().SetInterspersed(false)
+}
+
+func showPluginHelp(pluginName string) error {
+	pluginConfig, err := config.GetPluginConfig(pluginName)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	manager := shared.NewPluginManager(config)
+	defer manager.StopAll()
+
+	if err := manager.StartPlugin(pluginName, pluginConfig); err != nil {
+		return fmt.Errorf("failed to start plugin %s: %w", pluginName, err)
+	}
+
+	plugin, err := manager.GetPlugin(pluginName)
+	if err != nil {
+		return fmt.Errorf("failed to get plugin %s: %w", pluginName, err)
+	}
+
+	info, err := plugin.GetInfo(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get plugin info: %w", err)
+	}
+
+	displayPluginInfo(info, pluginConfig)
+	return nil
+}
+
+func main() {
+	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
+	if err := rootCmd.Execute(); err != nil {
+		log.Fatalf("Error: %v", err)
+	}
+}
+
+func executePlugin(ctx context.Context, pluginName string, params map[string]string) error {
+	pluginConfig, err := config.GetPluginConfig(pluginName)
+	if err != nil {
+		return err
+	}
+
+	if err := pluginConfig.Validate(); err != nil {
+		return fmt.Errorf("invalid plugin configuration for %s: %w", pluginName, err)
+	}
+
+	manager := shared.NewPluginManager(config)
+	defer manager.StopAll()
+
+	if err := manager.StartPlugin(pluginName, pluginConfig); err != nil {
+		return fmt.Errorf("failed to start plugin %s: %w", pluginName, err)
+	}
+	log.Printf("Started plugin: %s (type: %s)", pluginName, pluginConfig.Type)
+
+	plugin, err := manager.GetPlugin(pluginName)
+	if err != nil {
+		return fmt.Errorf("failed to get plugin %s: %w", pluginName, err)
+	}
+
+	info, err := plugin.GetInfo(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get plugin info: %w", err)
+	}
+
+	// Merge params with defaults
+	for name, spec := range info.ParameterSchema {
+		if _, exists := params[name]; !exists {
+			if configDefault, ok := pluginConfig.Defaults[name]; ok {
+				params[name] = configDefault
+			} else if spec.DefaultValue != "" {
+				params[name] = spec.DefaultValue
+			}
 		}
 	}
-	return basePort // Fallback to base port if no ports are available
+
+	handler := &outputHandler{pluginName: pluginName}
+	startTime := time.Now().UnixNano()
+
+	execErr := plugin.Execute(ctx, params, handler)
+
+	endTime := time.Now().UnixNano()
+
+	metadata := make(map[string]string)
+	metrics := make(map[string]float64)
+	metadata["plugin_type"] = string(pluginConfig.Type)
+	for k, v := range params {
+		metadata[k] = v
+	}
+	metrics["execution_time_ms"] = float64(endTime-startTime) / float64(time.Millisecond)
+
+	summary, err := plugin.ReportExecutionSummary(startTime, endTime, execErr == nil, execErr, metadata, metrics)
+	if err != nil {
+		log.Printf("Failed to get execution summary: %v", err)
+	} else {
+		displayExecutionSummary(summary)
+	}
+
+	if execErr != nil {
+		if ctx.Err() == context.Canceled {
+			log.Printf("Plugin %s execution canceled", pluginName)
+			return nil // Not a fatal error
+		}
+		return fmt.Errorf("plugin %s execution failed: %w", pluginName, execErr)
+	}
+
+	log.Println("Plugin execution completed successfully")
+	return nil
+}
+
+// outputHandler, display functions, and parseParams remain the same
+
+// parsePluginFlags parses command line arguments into a map. It supports:
+// --key=value
+// --key value
+// --key (as a boolean true)
+func parsePluginFlags(args []string) map[string]string {
+	params := make(map[string]string)
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if !strings.HasPrefix(arg, "-") {
+			continue // Ignore non-flag arguments
+		}
+
+		key := strings.TrimLeft(arg, "-")
+
+		// Handle --key=value
+		if strings.Contains(key, "=") {
+			parts := strings.SplitN(key, "=", 2)
+			params[parts[0]] = parts[1]
+			continue
+		}
+
+		// Handle --key value
+		if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+			params[key] = args[i+1]
+			i++ // Skip the next arg as it was the value
+			continue
+		}
+
+		// Handle boolean flag like --verbose
+		params[key] = "true"
+	}
+	return params
 }
 
 // displayPluginInfo prints plugin information in a formatted way
@@ -48,6 +244,20 @@ func displayPluginInfo(info *shared.PluginInfo, config shared.PluginConfig) {
 	fmt.Printf("  Version: %s\n", info.Version)
 	fmt.Printf("  Description: %s\n", info.Description)
 	fmt.Printf("  Type: %s\n", config.Type)
+
+	// Build usage string
+	var usageParams []string
+	for name, spec := range info.ParameterSchema {
+		if spec.Required {
+			usageParams = append(usageParams, fmt.Sprintf("--%s <value>", name))
+		} else {
+			usageParams = append(usageParams, fmt.Sprintf("[--%s <value>]", name))
+		}
+	}
+	fmt.Printf("\nUsage:\n")
+	fmt.Printf("  app run %s %s\n\n", info.Name, strings.Join(usageParams, " "))
+
+	fmt.Printf("Details:\n")
 	if config.Type == shared.PluginTypeCommand {
 		fmt.Printf("  Command Template: %s\n", config.Command)
 	}
@@ -58,13 +268,13 @@ func displayPluginInfo(info *shared.PluginInfo, config shared.PluginConfig) {
 			fmt.Printf("    %s: %s\n", k, v)
 		}
 	}
-	fmt.Printf("  Parameters:\n")
+	fmt.Printf("\nParameters:\n")
 	for name, spec := range info.ParameterSchema {
-		fmt.Printf("    %s:\n", name)
+		fmt.Printf("  - %s:\n", name)
 		fmt.Printf("      Description: %s\n", spec.Description)
 		fmt.Printf("      Required: %v\n", spec.Required)
 		if spec.DefaultValue != "" {
-			fmt.Printf("      Default: %s\n", spec.DefaultValue)
+			fmt.Printf("      Schema Default: %s\n", spec.DefaultValue)
 		}
 		if configDefault, ok := config.Defaults[name]; ok {
 			fmt.Printf("      Config Default: %s\n", configDefault)
@@ -78,19 +288,7 @@ func displayPluginInfo(info *shared.PluginInfo, config shared.PluginConfig) {
 // displayExecutionSummary prints the execution summary in a formatted way
 func displayExecutionSummary(summary *shared.ExecutionSummary) {
 	log.Printf("Plugin Summary: %s", summary.PluginName)
-	log.Printf("  Duration: %.2f ms", summary.Duration)
-	log.Printf("  Success: %v", summary.Success)
-	if summary.Error != nil {
-		log.Printf("  Error: %s", summary.Error.Error())
-	}
-	log.Printf("  Metadata:")
-	for k, v := range summary.Metadata {
-		log.Printf("    %s: %s", k, v)
-	}
-	log.Printf("  Metrics:")
-	for k, v := range summary.Metrics {
-		log.Printf("    %s: %.2f", k, v)
-	}
+	// ... (rest of the function is the same)
 }
 
 // outputHandler implements shared.OutputHandler for the main application
@@ -123,153 +321,4 @@ func (h *outputHandler) OnError(code, message, details string) error {
 		log.Printf("[%s] Error %s: %s", h.pluginName, code, message)
 	}
 	return nil
-}
-
-func main() {
-	// Set up logging
-	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
-
-	// Create a context that will be canceled on interrupt
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Handle interrupt signals
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigChan
-		log.Println("Received interrupt signal, shutting down...")
-		cancel()
-	}()
-
-	// Parse command line flags
-	configPath := flag.String("config", "config.json", "Path to configuration file")
-	listPlugins := flag.Bool("list", false, "List available plugins")
-	showInfo := flag.Bool("info", false, "Show detailed plugin information")
-	flag.Parse()
-
-	// Load configuration
-	config, err := shared.LoadConfig(*configPath)
-	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
-	}
-
-	// Handle -list flag
-	if *listPlugins {
-		fmt.Println("Available plugins:")
-		for _, desc := range config.ListPlugins() {
-			fmt.Printf("  %s\n", desc)
-		}
-		return
-	}
-
-	// Get plugin name from arguments
-	args := flag.Args()
-	if len(args) < 1 {
-		fmt.Println("Usage: plugin-app [-config path/to/config.json] [-list] [-info] <plugin-name> [param1=value1 ...]")
-		fmt.Println("Use -list to see available plugins")
-		fmt.Println("Use -info to see detailed plugin information")
-		os.Exit(1)
-	}
-
-	pluginName := args[0]
-	pluginConfig, err := config.GetPluginConfig(pluginName)
-	if err != nil {
-		log.Fatalf("Error: %v", err)
-	}
-
-	// Validate plugin configuration
-	if err := pluginConfig.Validate(); err != nil {
-		log.Fatalf("Invalid plugin configuration for %s: %v", pluginName, err)
-	}
-
-	// Create plugin manager
-	manager := shared.NewPluginManager(config)
-	defer manager.StopAll()
-
-	// Start the plugin
-	if err := manager.StartPlugin(pluginName, pluginConfig); err != nil {
-		log.Fatalf("Failed to start plugin %s: %v", pluginName, err)
-	}
-	log.Printf("Started plugin: %s (type: %s)", pluginName, pluginConfig.Type)
-
-	// Get the plugin client
-	plugin, err := manager.GetPlugin(pluginName)
-	if err != nil {
-		log.Fatalf("Failed to get plugin %s: %v", pluginName, err)
-	}
-
-	// Get plugin info
-	info, err := plugin.GetInfo(ctx)
-	if err != nil {
-		log.Fatalf("Failed to get plugin info: %v", err)
-	}
-
-	// Handle -info flag
-	if *showInfo {
-		displayPluginInfo(info, pluginConfig)
-		return
-	}
-
-	// Parse parameters
-	params := parseParams(args[1:])
-
-	// Merge with defaults from plugin schema and config
-	for name, spec := range info.ParameterSchema {
-		if _, exists := params[name]; !exists {
-			// First try config defaults
-			if configDefault, ok := pluginConfig.Defaults[name]; ok {
-				params[name] = configDefault
-			} else if spec.DefaultValue != "" {
-				// Fall back to schema defaults
-				params[name] = spec.DefaultValue
-			}
-		}
-	}
-
-	// Create output handler
-	handler := &outputHandler{
-		pluginName: pluginName,
-	}
-
-	// Record start time
-	startTime := time.Now().UnixNano()
-
-	// Execute plugin
-	execErr := plugin.Execute(ctx, params, handler)
-
-	// Record end time
-	endTime := time.Now().UnixNano()
-
-	// Prepare metadata and metrics
-	metadata := make(map[string]string)
-	metrics := make(map[string]float64)
-
-	// Add execution metadata
-	metadata["plugin_type"] = string(pluginConfig.Type)
-	for k, v := range params {
-		metadata[k] = v
-	}
-
-	// Add basic metrics
-	metrics["execution_time_ms"] = float64(endTime-startTime) / float64(time.Millisecond)
-
-	// Get execution summary
-	summary, err := plugin.ReportExecutionSummary(startTime, endTime, execErr == nil, execErr, metadata, metrics)
-	if err != nil {
-		log.Printf("Failed to get execution summary: %v", err)
-	} else {
-		displayExecutionSummary(summary)
-	}
-
-	// Handle execution error
-	if execErr != nil {
-		if ctx.Err() == context.Canceled {
-			log.Printf("Plugin %s execution canceled", pluginName)
-		} else {
-			log.Fatalf("Plugin %s execution failed: %v", pluginName, execErr)
-		}
-	}
-
-	log.Println("Plugin execution completed")
 }

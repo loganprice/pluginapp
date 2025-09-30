@@ -1,0 +1,15 @@
+# Go binaries
+/bin/*
+
+# OS-generated files
+.DS_Store
+
+# Python cache
+__pycache__/
+*.pyc
+
+# IDE and editor directories
+.vscode/
+.idea/
+*.swp
+*~

@@ -272,12 +272,16 @@ func StartPluginServer(impl PluginInterface, port int) (chan struct{}, error) {
 	return done, nil
 }
 
-// NewPluginClient creates a new plugin client
 func NewPluginClient(port int) (PluginInterface, error) {
 	address := fmt.Sprintf("localhost:%d", port)
+	return NewPluginClientWithAddress(address)
+}
+
+// NewPluginClientWithAddress creates a new plugin client that connects to a specific address
+func NewPluginClientWithAddress(address string) (PluginInterface, error) {
 	conn, err := grpc.Dial(address, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to port %d: %v", port, err)
+		return nil, fmt.Errorf("failed to connect to address %s: %v", address, err)
 	}
 
 	return &GRPCClient{

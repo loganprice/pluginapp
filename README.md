@@ -87,10 +87,11 @@ To execute a plugin, use the `run` command, followed by the plugin name and any 
 
 Plugins are registered in the `config.json` file. Each plugin entry defines how the main application should run it.
 
-There are two types of plugins:
+There are three types of plugins:
 
 - `binary`: A self-contained executable. The application runs it directly.
 - `command`: A script that needs an interpreter. The application uses the `command` template to execute it.
+- `remote`: A plugin already running on a remote server. The application connects to it directly via its address.
 
 **Example `config.json`:**
 

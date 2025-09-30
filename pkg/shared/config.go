@@ -12,46 +12,52 @@ import (
 type PluginType string
 
 const (
-	// PluginTypeGo represents a Go binary plugin using standard flags
+	// PluginTypeBinary represents a Go binary plugin
 	PluginTypeBinary PluginType = "binary"
 	// PluginTypeCommand represents a plugin started with a custom command
 	PluginTypeCommand PluginType = "command"
+	// PluginTypeRemote represents a plugin running on a remote server
+	PluginTypeRemote PluginType = "remote"
 )
 
 // PluginConfig represents the configuration for a plugin
 type PluginConfig struct {
-	Path        string            `json:"path"`        // Path to binary or command
-	Port        int               `json:"port"`        // Port to run the gRPC server on
-	Type        PluginType        `json:"type"`        // Type of plugin (go/command)
-	Command     string            `json:"command"`     // Command template with {port} and {path} placeholders
-	Description string            `json:"description"` // Plugin description
-	Defaults    map[string]string `json:"defaults"`    // Default parameter values
-	WorkingDir  string            `json:"workdir"`     // Working directory for the command
-	Environment map[string]string `json:"env"`         // Additional environment variables
+	Path        string            `json:"path,omitempty"`
+	Port        int               `json:"port,omitempty"`
+	Type        PluginType        `json:"type"`
+	Command     string            `json:"command,omitempty"`
+	Address     string            `json:"address,omitempty"`
+	Description string            `json:"description"`
+	Defaults    map[string]string `json:"defaults,omitempty"`
+	WorkingDir  string            `json:"workdir,omitempty"`
+	Environment map[string]string `json:"env,omitempty"`
 }
 
 // Validate checks if the plugin configuration is valid
 func (p *PluginConfig) Validate() error {
-	if p.Path == "" {
-		return fmt.Errorf("path is required")
-	}
-	if p.Port <= 0 {
-		return fmt.Errorf("invalid port: %d", p.Port)
+	switch p.Type {
+	case PluginTypeBinary, PluginTypeCommand:
+		if p.Path == "" {
+			return fmt.Errorf("path is required for %s type plugins", p.Type)
+		}
+		if p.Port <= 0 {
+			return fmt.Errorf("invalid port for local plugin: %d", p.Port)
+		}
+	case PluginTypeRemote:
+		if p.Address == "" {
+			return fmt.Errorf("address is required for remote-type plugins")
+		}
+	default:
+		return fmt.Errorf("unsupported plugin type: %s", p.Type)
 	}
 
-	switch p.Type {
-	case PluginTypeBinary:
-		// Go plugins don't need additional validation
-		return nil
-	case PluginTypeCommand:
+	if p.Type == PluginTypeCommand {
 		if p.Command == "" {
 			return fmt.Errorf("command is required for command-type plugins")
 		}
 		if !strings.Contains(p.Command, "{port}") {
 			return fmt.Errorf("command must contain {port} placeholder")
 		}
-	default:
-		return fmt.Errorf("unsupported plugin type: %s", p.Type)
 	}
 
 	return nil

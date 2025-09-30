@@ -58,6 +58,11 @@
         "JAVA_OPTS": "-Xmx512m",
         "LOG_LEVEL": "info"
       }
+    },
+    "remote-plugin-example": {
+      "type": "remote",
+      "address": "localhost:50055",
+      "description": "An example of a remote plugin"
     }
   }
 }

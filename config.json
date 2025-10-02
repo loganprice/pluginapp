@@ -30,7 +30,7 @@
     "python-multiply": {
       "type": "command",
       "path": "./plugins/multiply/multiply.py",
-      "command": "python3 {path} --port {port}",
+      "command": "python3 {path} --port {port} {args}",
       "port": 50053,
       "description": "A Python multiplication plugin",
       "workdir": "./plugins/multiply",
@@ -46,7 +46,7 @@
     "java-divide": {
       "type": "command",
       "path": "./plugins/divide/target/divide.jar",
-      "command": "java -jar {path} -Dserver.port={port}",
+      "command": "java -jar {path} -Dserver.port={port} {args}",
       "port": 50054,
       "description": "A Java division plugin",
       "workdir": "./plugins/divide",

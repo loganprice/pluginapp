@@ -7,8 +7,9 @@ import (
 	"log"
 	"time"
 
-	"github.com/example/grpc-plugin-app/pkg/common"
+	"github.com/example/grpc-plugin-app/pkg/plugin"
 	"github.com/example/grpc-plugin-app/proto"
+	"google.golang.org/grpc"
 )
 
 const (
@@ -233,7 +234,10 @@ func main() {
 	}
 
 	// Run the server
-	if err := common.RunGRPCServer(&HelloPlugin{}, *port); err != nil {
+	server := grpc.NewServer()
+	proto.RegisterPluginServer(server, &HelloPlugin{})
+	if err := plugin.RunGRPCServer(server, *port); err != nil {
 		log.Fatalf("Failed to run server: %v", err)
 	}
 }
+

@@ -5,20 +5,24 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 
-	"github.com/example/grpc-plugin-app/pkg/shared"
+	"github.com/example/grpc-plugin-app/proto"
+	"google.golang.org/grpc"
 )
 
 // RemoteTestPlugin implements the PluginInterface
-type RemoteTestPlugin struct{}
+type RemoteTestPlugin struct{
+	proto.UnimplementedPluginServer
+}
 
 // GetInfo returns information about the plugin
-func (p *RemoteTestPlugin) GetInfo(ctx context.Context) (*shared.PluginInfo, error) {
-	return &shared.PluginInfo{
+func (p *RemoteTestPlugin) GetInfo(ctx context.Context, req *proto.InfoRequest) (*proto.PluginInfo, error) {
+	return &proto.PluginInfo{
 		Name:        "remote-test-plugin",
 		Version:     "1.0.0",
 		Description: "A plugin to test remote functionality.",
-		ParameterSchema: map[string]shared.ParameterSpec{
+		ParameterSpecs: map[string]*proto.ParamSpec{
 			"message": {
 				Name:        "message",
 				Description: "A message to be echoed back.",
@@ -29,37 +33,38 @@ func (p *RemoteTestPlugin) GetInfo(ctx context.Context) (*shared.PluginInfo, err
 }
 
 // Execute runs the plugin's logic
-func (p *RemoteTestPlugin) Execute(ctx context.Context, params map[string]string, handler shared.OutputHandler) error {
-	message, ok := params["message"]
+func (p *RemoteTestPlugin) Execute(req *proto.ExecuteRequest, stream proto.Plugin_ExecuteServer) error {
+	message, ok := req.Params["message"]
 	if !ok {
-		return handler.OnError("MISSING_PARAM", "Missing required parameter: message", "")
+		return stream.Send(&proto.ExecuteOutput{
+			Content: &proto.ExecuteOutput_Error{
+				Error: &proto.Error{
+					Code:    "MISSING_PARAM",
+					Message: "Missing required parameter: message",
+				},
+			},
+		})
 	}
 
-	info, _ := p.GetInfo(ctx)
+	info, _ := p.GetInfo(stream.Context(), nil)
 
-	handler.OnOutput(fmt.Sprintf("Hello from the %s!", info.Name))
-	handler.OnOutput(fmt.Sprintf("I received the message: '%s'", message))
+	stream.Send(&proto.ExecuteOutput{
+		Content: &proto.ExecuteOutput_Output{
+			Output: fmt.Sprintf("Hello from the %s!", info.Name),
+		},
+	})
+	stream.Send(&proto.ExecuteOutput{
+		Content: &proto.ExecuteOutput_Output{
+			Output: fmt.Sprintf("I received the message: '%s'", message),
+		},
+	})
 
 	return nil
 }
 
 // ReportExecutionSummary is a no-op for this simple plugin
-func (p *RemoteTestPlugin) ReportExecutionSummary(startTime, endTime int64, success bool, err error, metadata map[string]string, metrics map[string]float64) (*shared.ExecutionSummary, error) {
-	return &shared.ExecutionSummary{
-		PluginName: "remote-test-plugin",
-		Success:    success,
-		Error:      err,
-	}, nil
-}
-
-// ValidateParameters is a no-op for this simple plugin
-func (p *RemoteTestPlugin) ValidateParameters(params map[string]string) error {
-	return nil
-}
-
-// Close is a no-op
-func (p *RemoteTestPlugin) Close() error {
-	return nil
+func (p *RemoteTestPlugin) ReportExecutionSummary(ctx context.Context, req *proto.SummaryRequest) (*proto.SummaryResponse, error) {
+	return &proto.SummaryResponse{}, nil
 }
 
 func main() {
@@ -68,13 +73,16 @@ func main() {
 
 	log.Printf("Starting remote test plugin on port %d...", *port)
 
-	impl := &RemoteTestPlugin{}
-	done, err := shared.StartPluginServer(impl, *port)
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", *port))
 	if err != nil {
-		log.Fatalf("Failed to start plugin server: %v", err)
+		log.Fatalf("failed to listen on port %d: %v", *port, err)
 	}
 
-	// Wait for a signal to stop the server
-	<-done
-	log.Println("Plugin server stopped.")
+	server := grpc.NewServer()
+	impl := &RemoteTestPlugin{}
+	proto.RegisterPluginServer(server, impl)
+
+	if err := server.Serve(listener); err != nil {
+		log.Fatalf("Failed to run server: %v", err)
+	}
 }

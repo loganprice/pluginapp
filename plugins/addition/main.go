@@ -10,8 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/example/grpc-plugin-app/pkg/common"
+	"github.com/example/grpc-plugin-app/pkg/plugin"
 	"github.com/example/grpc-plugin-app/proto"
+	"google.golang.org/grpc"
 )
 
 const (
@@ -304,7 +305,8 @@ func (p *AdditionPlugin) ReportExecutionSummary(ctx context.Context, req *proto.
 		Error:      req.Error,
 		Metadata:   req.Metadata,
 		Metrics:    req.Metrics,
-	}, nil
+	},
+	nil
 }
 
 func main() {
@@ -317,7 +319,9 @@ func main() {
 	}
 
 	// Run the server
-	if err := common.RunGRPCServer(&AdditionPlugin{}, *port); err != nil {
+	server := grpc.NewServer()
+	proto.RegisterPluginServer(server, &AdditionPlugin{})
+	if err := plugin.RunGRPCServer(server, *port); err != nil {
 		log.Fatalf("Failed to run server: %v", err)
 	}
 }

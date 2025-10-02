@@ -19,6 +19,8 @@ const (
 // HelloPlugin directly implements the proto.PluginServer interface
 type HelloPlugin struct {
 	proto.UnimplementedPluginServer
+	message  string
+	language string
 }
 
 // GetInfo implements the GetInfo RPC method
@@ -47,45 +49,16 @@ func (p *HelloPlugin) GetInfo(ctx context.Context, req *proto.InfoRequest) (*pro
 	}, nil
 }
 
-// validateParameters validates the input parameters
-func (p *HelloPlugin) validateParameters(params map[string]string) error {
-	// Check language if specified
-	if lang, ok := params["language"]; ok {
-		validLangs := map[string]bool{
-			"en": true,
-			"es": true,
-			"fr": true,
-			"de": true,
-		}
-		if !validLangs[lang] {
-			return fmt.Errorf("unsupported language: %s (supported: en, es, fr, de)", lang)
-		}
-	}
-	return nil
-}
-
 // Execute implements the Execute RPC method
 func (p *HelloPlugin) Execute(req *proto.ExecuteRequest, stream proto.Plugin_ExecuteServer) error {
-	// Validate parameters
-	if err := p.validateParameters(req.Params); err != nil {
-		return stream.Send(&proto.ExecuteOutput{
-			Content: &proto.ExecuteOutput_Error{
-				Error: &proto.Error{
-					Code:    "INVALID_PARAMETERS",
-					Message: err.Error(),
-				},
-			},
-		})
-	}
-
 	// Get message parameter with default
-	message := req.Params["message"]
+	message := p.message
 	if message == "" {
 		message = "World"
 	}
 
 	// Get language parameter with default
-	language := req.Params["language"]
+	language := p.language
 	if language == "" {
 		language = "en"
 	}
@@ -227,6 +200,8 @@ func (p *HelloPlugin) ReportExecutionSummary(ctx context.Context, req *proto.Sum
 func main() {
 	// Parse command line flags
 	port := flag.Int("port", 0, "Port to listen on")
+	message := flag.String("message", "", "The name or message to greet")
+	language := flag.String("language", "en", "The language to use for greeting")
 	flag.Parse()
 
 	if *port == 0 {
@@ -235,7 +210,10 @@ func main() {
 
 	// Run the server
 	server := grpc.NewServer()
-	proto.RegisterPluginServer(server, &HelloPlugin{})
+	proto.RegisterPluginServer(server, &HelloPlugin{
+		message:  *message,
+		language: *language,
+	})
 	if err := plugin.RunGRPCServer(server, *port); err != nil {
 		log.Fatalf("Failed to run server: %v", err)
 	}

@@ -10,7 +10,7 @@ import (
 )
 
 func NewRunCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "run [plugin-name] [param1=value1 ...]",
 		Short: "Run a specific plugin",
 		Args:  cobra.MinimumNArgs(1),
@@ -32,4 +32,6 @@ func NewRunCmd() *cobra.Command {
 			return app.ExecutePlugin(ctx, Config, pluginName, pluginParams)
 		},
 	}
+	cmd.Flags().SetInterspersed(false)
+	return cmd
 }
